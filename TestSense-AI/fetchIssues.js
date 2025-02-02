@@ -44,6 +44,12 @@ module.exports = defineConfig({
     }
 }
 
+// Extract URLs from the issue description, excluding GitHub links
+function extractUrls(text) {
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    return (text.match(urlRegex) || []).filter(url => !url.includes("github.com"));
+}
+
 // Log all issues with title and description
 async function logAllIssues() {
     try {
@@ -67,6 +73,25 @@ async function logAllIssues() {
     }
 }
 
+// Post comment to GitHub issue
+async function postComment(issueNumber, body) {
+    try {
+        const response = await axios.post(
+            `https://api.github.com/repos/Giveth/giveth-dapps-v2/issues/${issueNumber}/comments`,
+            { body },
+            {
+                headers: {
+                    Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+                    "Content-Type": "application/json",
+                },
+            }
+        );
+        console.log("Comment posted successfully:", response.data.html_url);
+    } catch (error) {
+        console.error("Error posting comment to GitHub:", error.message);
+    }
+}
+
 // Function to fetch a specific GitHub issue and generate test steps
 async function fetchIssue(issueNumber) {
     try {
@@ -84,22 +109,90 @@ async function fetchIssue(issueNumber) {
         console.log(`Description: ${issue.body}`);
         console.log("---------------------------------------");
 
+        const extractedUrls = extractUrls(issue.body);
+        console.log("Extracted URLs (excluding GitHub links):", extractedUrls);
+
         const { testSteps, positiveScenarios, negativeScenarios } = await generateTestStepsAndScenarios(issue.body);
         console.log("\n### Detailed Test Steps for UI Testing:\n", testSteps);
         console.log("\n### Positive Test Scenarios:\n", positiveScenarios);
         console.log("\n### Negative Test Scenarios:\n", negativeScenarios);
+
+        // Post test details as a comment
+        const testDetailsComment = `
+**Detailed Test Steps for UI Testing:**
+${testSteps}
+
+**Positive Test Scenarios:**
+${positiveScenarios}
+
+**Negative Test Scenarios:**
+${negativeScenarios}
+        `.trim();
+        await postComment(issueNumber, testDetailsComment);
 
         if (testSteps === "Failed to generate test steps.") {
             console.error("Skipping test execution as test steps could not be generated.");
             return;
         }
 
-        await generateAndRunCypressTests(issue.body, testSteps, positiveScenarios, negativeScenarios);
+        await generateAndRunCypressTests(issue.body, extractedUrls, testSteps, positiveScenarios, negativeScenarios, issueNumber);
     } catch (error) {
         console.error("Error fetching the issue:", error.message);
     }
 }
 
+// Function to generate and run Cypress tests using extracted URLs
+async function generateAndRunCypressTests(issueDescription, extractedUrls, testSteps, positiveScenarios, negativeScenarios, issueNumber) {
+    try {
+        const cypressDir = path.join(__dirname, "cypress", "integration");
+        if (!fs.existsSync(cypressDir)) {
+            fs.mkdirSync(cypressDir, { recursive: true });
+        }
+
+        const testFilePath = path.join(cypressDir, "generatedTest.spec.js");
+
+        let cypressTestContent = extractedUrls.map(url => `
+describe('UI Tests for ${url}', () => {
+    it('Should visit the page and verify elements', () => {
+        cy.visit('${url}');
+        cy.get('body').should('be.visible');
+    });
+});
+        `).join("\n");
+
+        fs.writeFileSync(testFilePath, cypressTestContent, "utf8");
+
+        ensureCypressConfig();
+        exec("npx cypress run", async (error, stdout, stderr) => {
+            const reportHtmlPath = path.join(__dirname, "cypress", "reports", "mochawesome.html");
+
+            let mochaReportUrl = `https://raw.githubusercontent.com/Giveth/giveth-dapps-v2/main/cypress/reports/mochawesome.html`;
+            let testResultsComment = `
+**Test Results Table:**
+
+\`\`\`
+${stdout}
+\`\`\`
+
+[📄 View Mocha Report](${mochaReportUrl})
+            `.trim();
+
+            console.log("\nTest Results:\n", testResultsComment);
+
+            await postComment(issueNumber, testResultsComment);
+
+            if (error) {
+                console.error("Error running Cypress tests:", error.message);
+            } else {
+                console.log("Cypress tests executed successfully.");
+            }
+        });
+    } catch (error) {
+        console.error("Error generating Cypress tests:", error.message);
+    }
+}
+
+// Function to generate test steps and scenarios
 // Function to generate test steps and scenarios
 async function generateTestStepsAndScenarios(issueDescription) {
     try {
@@ -111,31 +204,31 @@ You are a QA engineer. Based on the following issue description, generate:
 
 The response format must strictly follow this structure:
 
-**Detailed Test Steps for UI Testing:**
+---
+### Detailed Test Steps for UI Testing:
 1. Step 1
 2. Step 2
 ...
 
-**Positive Test Scenarios:**
+### Positive Test Scenarios:
 1. Scenario 1
 2. Scenario 2
 ...
 
-**Negative Test Scenarios:**
+### Negative Test Scenarios:
 1. Scenario 1
 2. Scenario 2
 ...
 
-Issue Description:
+---
+
+**Issue Description:**
 ${issueDescription}
 `;
 
         const response = await openai.createChatCompletion({
             model: "gpt-3.5-turbo",
-            messages: [
-                { role: "system", content: "You are a QA engineer." },
-                { role: "user", content: prompt },
-            ],
+            messages: [{ role: "system", content: "You are a QA engineer." }, { role: "user", content: prompt }],
             max_tokens: 3000,
         });
 
@@ -143,93 +236,27 @@ ${issueDescription}
         console.log("Full OpenAI Response:\n", content);
 
         const extractSection = (sectionTitle) => {
-            const regex = new RegExp(`\\*\\*${sectionTitle}:\\*\\*\\s*([\\s\\S]*?)(?=\\*\\*|$)`);
+            const regex = new RegExp(`### ${sectionTitle}:[\\s\\S]*?(?=###|$)`, "g");
             const match = content.match(regex);
-            return match ? match[1].trim() : "No data generated.";
+            return match ? match[0].replace(`### ${sectionTitle}:`, "").trim() : "No data generated.";
         };
 
         return {
             testSteps: extractSection("Detailed Test Steps for UI Testing"),
             positiveScenarios: extractSection("Positive Test Scenarios"),
-            negativeScenarios: extractSection("Negative Test Scenarios"),
+            negativeScenarios: extractSection("Negative Test Scenarios")
         };
     } catch (error) {
         console.error("Error generating test steps and scenarios:", error.message);
         return {
             testSteps: "Failed to generate test steps.",
-            positiveScenarios: "No positive scenarios generated.",
-            negativeScenarios: "No negative scenarios generated.",
+            positiveScenarios: "No data generated.",
+            negativeScenarios: "No data generated."
         };
     }
 }
-
-// Function to generate and run Cypress tests
-async function generateAndRunCypressTests(issueDescription, testSteps, positiveScenarios, negativeScenarios) {
-    try {
-        const prompt = `
-You are an expert in QA and Cypress testing. Based on the following details, generate Cypress test code without any additional description or markdown formatting.
-
-Issue Description:
-${issueDescription}
-
-Detailed Test Steps for UI Testing:
-${testSteps}
-
-Positive Test Scenarios:
-${positiveScenarios}
-
-Negative Test Scenarios:
-${negativeScenarios}
-`;
-
-        const response = await openai.createChatCompletion({
-            model: "gpt-3.5-turbo",
-            messages: [
-                { role: "system", content: "You are a QA engineer and Cypress expert." },
-                { role: "user", content: prompt },
-            ],
-            max_tokens: 2000,
-        });
-
-        let cypressCode = response.data.choices[0].message.content.trim();
-        cypressCode = cypressCode.replace(/^```javascript/, "").replace(/```$/, "").trim();
-
-        const lastIndex = cypressCode.lastIndexOf("});");
-        if (lastIndex !== -1) {
-            cypressCode = cypressCode.substring(0, lastIndex + 3);
-        }
-
-        console.log("Generated Cypress Test Code:\n", cypressCode);
-
-        const cypressDir = path.join(__dirname, "cypress", "integration");
-        if (!fs.existsSync(cypressDir)) {
-            fs.mkdirSync(cypressDir, { recursive: true });
-        }
-
-        const testFilePath = path.join(cypressDir, "generatedTest.spec.js");
-        fs.writeFileSync(testFilePath, cypressCode, "utf8");
-        console.log(`Cypress test script saved to: ${testFilePath}`);
-
-        ensureCypressConfig();
-        exec("npx cypress run", (error, stdout, stderr) => {
-            console.log("Cypress STDOUT:\n", stdout);
-            console.error("Cypress STDERR:\n", stderr);
-            if (error) {
-                console.error(`Error running Cypress tests: ${error.message}`);
-            } else {
-                console.log("Cypress tests executed successfully.");
-            }
-        });
-    } catch (error) {
-        console.error("Error generating Cypress tests:", error.message);
-    }
-}
-
 // Prompt for user input
-const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-});
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
 logAllIssues();
 rl.question("Enter the GitHub issue number to fetch: ", (issueNumber) => {
