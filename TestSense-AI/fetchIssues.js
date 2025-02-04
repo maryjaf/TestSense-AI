@@ -142,31 +142,135 @@ ${negativeScenarios}
 }
 
 // Function to generate and run Cypress tests using extracted URLs
+// Function to generate and run AI-driven Cypress tests
+// Function to fetch page HTML and extract selectors
+async function fetchPageHtml(url) {
+    try {
+        const response = await axios.get(url);
+        return response.data; // Return raw HTML
+    } catch (error) {
+        console.error(`❌ Failed to fetch HTML for ${url}:`, error.message);
+        return null;
+    }
+}
+
+// Function to extract meaningful selectors from the page HTML
+function extractValidSelectors(html) {
+    const matches = [...html.matchAll(/class="([^"]+)"/g)];
+    const uniqueSelectors = [...new Set(matches.map(match => `.${match[1].replace(/\s+/g, '.')}`))];
+    return uniqueSelectors.slice(0, 10); // Limit to avoid excessive selectors
+}
+
+// Function to generate and run AI-driven Cypress tests
+// Function to fetch page HTML and extract selectors
+async function fetchPageHtml(url) {
+    try {
+        const response = await axios.get(url);
+        return response.data; // Return raw HTML
+    } catch (error) {
+        console.error(`❌ Failed to fetch HTML for ${url}:`, error.message);
+        return null;
+    }
+}
+
+// Function to extract meaningful selectors from the page HTML
+function extractValidSelectors(html) {
+    const matches = [...html.matchAll(/class="([^"]+)"/g)];
+    const uniqueSelectors = [...new Set(matches.map(match => `.${match[1].replace(/\s+/g, '.')}`))];
+    return uniqueSelectors.slice(0, 10); // Limit to avoid excessive selectors
+}
+
+// Function to generate and run AI-driven Cypress tests
 async function generateAndRunCypressTests(issueDescription, extractedUrls, testSteps, positiveScenarios, negativeScenarios, issueNumber) {
     try {
+        if (!extractedUrls.length) {
+            console.error("❌ No valid URLs extracted. Skipping test generation.");
+            await postComment(issueNumber, "**Error: No valid test URLs extracted. Skipping Cypress test execution.**");
+            return;
+        }
+
+        console.log("✅ Extracted URLs for Testing:", extractedUrls);
+
+        let validSelectors = {};
+        for (const url of extractedUrls) {
+            const html = await fetchPageHtml(url);
+            if (html) {
+                validSelectors[url] = extractValidSelectors(html);
+            }
+        }
+
+        console.log("✅ Extracted Valid Selectors:", validSelectors);
+
+        // 🛠 Improved Prompt to Ensure AI Uses Correct Selectors & Test Logic
+        const prompt = `
+You are a QA engineer and a Cypress expert. Based on the issue description, test steps, and scenarios, generate Cypress test cases **that are relevant to the issue** while using **only real selectors** extracted from the URLs.
+
+---
+### **Extracted URLs for Testing**
+${extractedUrls.join("\n")}
+
+### **Valid Selectors for Each URL**
+${Object.entries(validSelectors).map(([url, selectors]) => `${url}: ${selectors.join(', ')}`).join("\n")}
+
+### **Issue Description**
+${issueDescription}
+
+### **Detailed Test Steps for UI Testing**
+${testSteps}
+
+### **Positive Test Scenarios**
+${positiveScenarios}
+
+### **Negative Test Scenarios**
+${negativeScenarios}
+
+---
+### **Strict Guidelines**
+1. **Tests should be fully aligned with the issue description and scenarios.**
+2. **Use only real selectors from the provided URLs. Do NOT invent class names like \`'.endaoment-banner'\` if they don’t exist.**
+3. **Ensure each test starts with \`cy.visit()\` and handles dynamically loaded elements using appropriate waiting mechanisms.**
+4. **Ensure every element exists before performing assertions** (\`cy.get().should('exist')\`).**
+5. **Increase \`defaultCommandTimeout\` to 10000ms to accommodate elements that take longer to appear.**
+6. **If an element is missing, log a warning instead of failing immediately.**
+7. **Each test should be specific to the extracted URLs and match the issue's test steps and scenarios.**
+
+---
+Return **only Cypress test code**, without explanations or markdown formatting.
+`;
+
+        // 🔥 Send Request to AI for Cypress Test Generation
+        const response = await openai.createChatCompletion({
+            model: "gpt-3.5-turbo",
+            messages: [
+                { role: "system", content: "You are a Cypress expert and a QA engineer." },
+                { role: "user", content: prompt },
+            ],
+            max_tokens: 3000,
+        });
+
+        let cypressTestContent = response.data.choices[0].message.content.trim();
+        cypressTestContent = cypressTestContent.replace(/^```javascript/, "").replace(/```$/, "").trim();
+
+        console.log("Generated Cypress Test Code:\n", cypressTestContent);
+
+        // Ensure Cypress test directory exists
         const cypressDir = path.join(__dirname, "cypress", "integration");
         if (!fs.existsSync(cypressDir)) {
             fs.mkdirSync(cypressDir, { recursive: true });
         }
 
+        // Save the test file
         const testFilePath = path.join(cypressDir, "generatedTest.spec.js");
-
-        let cypressTestContent = extractedUrls.map(url => `
-describe('UI Tests for ${url}', () => {
-    it('Should visit the page and verify elements', () => {
-        cy.visit('${url}');
-        cy.get('body').should('be.visible');
-    });
-});
-        `).join("\n");
-
         fs.writeFileSync(testFilePath, cypressTestContent, "utf8");
+        console.log(`✅ Cypress test script saved to: ${testFilePath}`);
 
         ensureCypressConfig();
-        exec("npx cypress run", async (error, stdout, stderr) => {
-            const reportHtmlPath = path.join(__dirname, "cypress", "reports", "mochawesome.html");
 
+        // Run Cypress Tests
+        exec("npx cypress run", async (error, stdout) => {
+            const reportHtmlPath = path.join(__dirname, "cypress", "reports", "mochawesome.html");
             let mochaReportUrl = `https://raw.githubusercontent.com/Giveth/giveth-dapps-v2/main/cypress/reports/mochawesome.html`;
+
             let testResultsComment = `
 **Test Results Table:**
 
@@ -178,19 +282,19 @@ ${stdout}
             `.trim();
 
             console.log("\nTest Results:\n", testResultsComment);
-
             await postComment(issueNumber, testResultsComment);
 
             if (error) {
-                console.error("Error running Cypress tests:", error.message);
+                console.error("❌ Error running Cypress tests:", error.message);
             } else {
-                console.log("Cypress tests executed successfully.");
+                console.log("✅ Cypress tests executed successfully.");
             }
         });
     } catch (error) {
-        console.error("Error generating Cypress tests:", error.message);
+        console.error("❌ Error generating Cypress tests:", error.message);
     }
 }
+
 
 // Function to generate test steps and scenarios
 // Function to generate test steps and scenarios
