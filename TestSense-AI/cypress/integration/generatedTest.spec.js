@@ -1,4 +1,4 @@
-describe('Endaoment Banner UI Tests', () => {
+npdescribe('Endaoment Banner UI Tests', () => {
   beforeEach(() => {
     cy.visit('https://giveth.io/project/Homeless-Not-Toothless');
   });
