@@ -149,7 +149,7 @@ async function fetchPageHtml(url) {
         const response = await axios.get(url);
         return response.data; // Return raw HTML
     } catch (error) {
-        console.error(`❌ Failed to fetch HTML for ${url}:`, error.message);
+        console.error(` Failed to fetch HTML for ${url}:`, error.message);
         return null;
     }
 }
@@ -168,7 +168,7 @@ async function fetchPageHtml(url) {
         const response = await axios.get(url);
         return response.data; // Return raw HTML
     } catch (error) {
-        console.error(`❌ Failed to fetch HTML for ${url}:`, error.message);
+        console.error(` Failed to fetch HTML for ${url}:`, error.message);
         return null;
     }
 }
@@ -184,12 +184,12 @@ function extractValidSelectors(html) {
 async function generateAndRunCypressTests(issueDescription, extractedUrls, testSteps, positiveScenarios, negativeScenarios, issueNumber) {
     try {
         if (!extractedUrls.length) {
-            console.error("❌ No valid URLs extracted. Skipping test generation.");
+            console.error(" No valid URLs extracted. Skipping test generation.");
             await postComment(issueNumber, "**Error: No valid test URLs extracted. Skipping Cypress test execution.**");
             return;
         }
 
-        console.log("✅ Extracted URLs for Testing:", extractedUrls);
+        console.log(" Extracted URLs for Testing:", extractedUrls);
 
         let validSelectors = {};
         for (const url of extractedUrls) {
@@ -199,7 +199,7 @@ async function generateAndRunCypressTests(issueDescription, extractedUrls, testS
             }
         }
 
-        console.log("✅ Extracted Valid Selectors:", validSelectors);
+        console.log("Extracted Valid Selectors:", validSelectors);
 
         // 🛠 Improved Prompt to Ensure AI Uses Correct Selectors & Test Logic
         const prompt = `
@@ -238,7 +238,7 @@ ${negativeScenarios}
 Return **only Cypress test code**, without explanations or markdown formatting.
 `;
 
-        // 🔥 Send Request to AI for Cypress Test Generation
+        //  Send Request to AI for Cypress Test Generation
         const response = await openai.createChatCompletion({
             model: "gpt-3.5-turbo",
             messages: [
@@ -262,7 +262,7 @@ Return **only Cypress test code**, without explanations or markdown formatting.
         // Save the test file
         const testFilePath = path.join(cypressDir, "generatedTest.spec.js");
         fs.writeFileSync(testFilePath, cypressTestContent, "utf8");
-        console.log(`✅ Cypress test script saved to: ${testFilePath}`);
+        console.log(`Cypress test script saved to: ${testFilePath}`);
 
         ensureCypressConfig();
 
@@ -285,13 +285,13 @@ ${stdout}
             await postComment(issueNumber, testResultsComment);
 
             if (error) {
-                console.error("❌ Error running Cypress tests:", error.message);
+                console.error(" Error running Cypress tests:", error.message);
             } else {
-                console.log("✅ Cypress tests executed successfully.");
+                console.log("Cypress tests executed successfully.");
             }
         });
     } catch (error) {
-        console.error("❌ Error generating Cypress tests:", error.message);
+        console.error("Error generating Cypress tests:", error.message);
     }
 }
 
